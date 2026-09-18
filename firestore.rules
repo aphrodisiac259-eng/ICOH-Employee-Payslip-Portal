@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Check if user is an admin (SuperAdmin or PayrollOfficer)
+    function isAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token.role == 'SuperAdmin' || request.auth.token.role == 'PayrollOfficer') ||
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.isActive == true)
+      );
+    }
+    
+    // Check if user is SuperAdmin
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'SuperAdmin' ||
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'SuperAdmin' &&
+         get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.isActive == true)
+      );
+    }
+
+    // payslipRequests collection
+    match /payslipRequests/{requestId} {
+      // Anyone (unauthenticated public employee) can create a payslip request
+      allow create: if request.resource.data.officialEmail is string
+                    && request.resource.data.payslipMonth is string
+                    && request.resource.data.referenceNumber is string
+                    && request.resource.data.status == 'Pending';
+      
+      // Only authenticated admins can read, query, update
+      allow read: if isAdmin();
+      allow update: if isAdmin();
+      
+      // Only SuperAdmin can delete if needed
+      allow delete: if isSuperAdmin();
+    }
+
+    // admins collection
+    match /admins/{userId} {
+      // Any authenticated admin can read admin profiles (for display names / assigned officers)
+      allow read: if isAuthenticated();
+      // SuperAdmin can create/update/delete any admin profile
+      // Admin can update their own profile (name, lastLogin) but cannot self-escalate role
+      allow create: if isSuperAdmin() || (isAuthenticated() && request.auth.uid == userId);
+      allow update: if isSuperAdmin() || (isAuthenticated() && request.auth.uid == userId && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role']));
+      allow delete: if isSuperAdmin();
+    }
+
+    // auditLogs collection
+    match /auditLogs/{logId} {
+      // Any authenticated admin can create an audit log entry for their actions
+      allow create: if isAdmin();
+      // SuperAdmin and admins can read audit logs
+      allow read: if isAdmin();
+      // Audit logs are immutable
+      allow update, delete: if false;
+    }
+
+    // systemSettings collection
+    match /systemSettings/{settingId} {
+      // Public / all users can read non-sensitive system settings (like org name, maintenance mode)
+      allow read: if true;
+      // Only SuperAdmin can modify system settings
+      allow write: if isSuperAdmin();
+    }
+  }
+}
